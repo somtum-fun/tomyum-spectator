@@ -2,7 +2,7 @@
 
 ppy's [osu-server-spectator](https://github.com/ppy/osu-server-spectator) (osu!lazer's multiplayer,
 spectating, online presence and replay saving) built for TomYum. The Dockerfile clones ppy's source
-at a pinned commit and changes it in four small ways:
+at a pinned commit and changes it in three small ways:
 
 1. **Replays on disk.** Lazer replays are written to `REPLAYS_PATH` (the website's
    `public/uploads/replay`, where osu-web reads them and TomYum's circleguard checks them) instead
