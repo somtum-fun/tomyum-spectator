@@ -8,6 +8,10 @@ ARG SPECTATOR_REPO=https://github.com/ppy/osu-server-spectator
 ARG SPECTATOR_REF=b6ac7a9a2b8cbf148d64a01e928f7eea7ced7f64
 RUN git clone "$SPECTATOR_REPO" /src && git -C /src checkout "$SPECTATOR_REF"
 WORKDIR /src/osu.Server.Spectator
+# SignalR 10.0.12 has two denial-of-service advisories (CVE-2026-70159, CVE-2026-92707), fixed in 10.0.13:
+# ppy's Microsoft 10.0.12 packages go to 10.0.13 (the runtime below is aspnet:10.0, pulled fresh when built).
+RUN grep -q 'Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.12"' osu.Server.Spectator.csproj \
+    && sed -i -E 's/(Include="Microsoft\.[^"]*" Version=")10\.0\.12"/\110.0.13"/' osu.Server.Spectator.csproj
 RUN grep -q 'IScoreStorage, S3ScoreStorage>' Extensions/ServiceCollectionExtensions.cs \
     && sed -i 's/IScoreStorage, S3ScoreStorage>/IScoreStorage, FileScoreStorage>/' Extensions/ServiceCollectionExtensions.cs
 # ppy's build connects to MySQL without a password (their deployment authenticates otherwise):
