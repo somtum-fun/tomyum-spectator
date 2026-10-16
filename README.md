@@ -19,7 +19,7 @@ at a pinned commit and changes it in three small ways:
 TomYum's production compose builds it from a checkout next to TomYum:
 
 ```
-git clone https://github.com/sundeiii/tomyum-spectator ~/tomyum-spectator
+git clone https://github.com/somtum-fun/tomyum-spectator ~/tomyum-spectator
 # deploy/production/.env: SPECTATOR_PATH=../../../tomyum-spectator (the default)
 docker compose build spectator
 ```
