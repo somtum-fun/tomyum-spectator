@@ -5,13 +5,12 @@
 # of Amazon S3, which ppy's build always uses. See TomYum docs/lazer.md.
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-env
 ARG SPECTATOR_REPO=https://github.com/ppy/osu-server-spectator
-ARG SPECTATOR_REF=b6ac7a9a2b8cbf148d64a01e928f7eea7ced7f64
+ARG SPECTATOR_REF=eb52d25e44de269790828fabb245d45a1f7e86fa
 RUN git clone "$SPECTATOR_REPO" /src && git -C /src checkout "$SPECTATOR_REF"
 WORKDIR /src/osu.Server.Spectator
-# SignalR 10.0.12 has two denial-of-service advisories (CVE-2026-70159, CVE-2026-92707), fixed in 10.0.13:
-# ppy's Microsoft 10.0.12 packages go to 10.0.13 (the runtime below is aspnet:10.0, pulled fresh when built).
-RUN grep -q 'Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.12"' osu.Server.Spectator.csproj \
-    && sed -i -E 's/(Include="Microsoft\.[^"]*" Version=")10\.0\.12"/\110.0.13"/' osu.Server.Spectator.csproj
+# ppy's packages are on 10.0.13 (October 2026's fixes), but ppy.osu.Game still brings MessagePack 3.1.8:
+# 3.1.9 fixes a denial of service (CVE-2026-92707), 3.1.10 a ReDoS.
+RUN dotnet add package MessagePack --version 3.1.12
 RUN grep -q 'IScoreStorage, S3ScoreStorage>' Extensions/ServiceCollectionExtensions.cs \
     && sed -i 's/IScoreStorage, S3ScoreStorage>/IScoreStorage, FileScoreStorage>/' Extensions/ServiceCollectionExtensions.cs
 # ppy's build connects to MySQL without a password (their deployment authenticates otherwise):
@@ -24,6 +23,9 @@ RUN grep -q '.AddHostedService<MultiplayerRoomLifetimeBackgroundService>();' Ext
 RUN dotnet publish -c Release -o /out && rm -rf /out/runtimes /out/osu.Game.Resources.dll
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
+# ca-certificates: the base image's are older than Ubuntu's fix for the eMudhra CA key compromise
+# (CVE-2026-111943, 20260816ubuntu0.24.04.1): upgrade them until Microsoft's image has it.
+RUN apt-get update && apt-get install -y --only-upgrade ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build-env /out .
 ENTRYPOINT ["dotnet", "osu.Server.Spectator.dll"]
