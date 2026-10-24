@@ -20,6 +20,17 @@ RUN grep -q 'User ID={AppSettings.DatabaseUser};' Database/DatabaseAccess.cs \
 # Publish lazer presence to Redis for TomYum (online lists, the website's online graph).
 COPY TomYumPresencePublisher.cs Hubs/Metadata/TomYumPresencePublisher.cs
 RUN grep -q '.AddHostedService<MultiplayerRoomLifetimeBackgroundService>();' Extensions/ServiceCollectionExtensions.cs     && sed -i 's/.AddHostedService<MultiplayerRoomLifetimeBackgroundService>();/.AddHostedService<MultiplayerRoomLifetimeBackgroundService>().AddHostedService<TomYumPresencePublisher>();/' Extensions/ServiceCollectionExtensions.cs
+# Tell TomYum whether a lazer play was paused (osu!dan's "no pausing"): see TomYumPauseTracker.cs.
+COPY TomYumPauseTracker.cs Hubs/Spectator/TomYumPauseTracker.cs
+RUN grep -q 'usage.Item.ScoreTokens.Add(scoreToken.Value);' Hubs/Spectator/SpectatorHub.cs \
+    && grep -q 'await scoreBuffer.UpdateAsync(scoreToken.Value, data);' Hubs/Spectator/SpectatorHub.cs \
+    && grep -q 'var score = await scoreBuffer.DequeueAsync(scoreToken.Value);' Hubs/Spectator/SpectatorHub.cs \
+    && sed -i -e 's/usage.Item.ScoreTokens.Add(scoreToken.Value);/usage.Item.ScoreTokens.Add(scoreToken.Value); TomYumPauseTracker.Begin(scoreToken.Value, state);/' \
+        -e 's/await scoreBuffer.UpdateAsync(scoreToken.Value, data);/await scoreBuffer.UpdateAsync(scoreToken.Value, data); TomYumPauseTracker.Frames(scoreToken.Value, data);/' \
+        -e 's/var score = await scoreBuffer.DequeueAsync(scoreToken.Value);/TomYumPauseTracker.End(scoreToken.Value); var score = await scoreBuffer.DequeueAsync(scoreToken.Value);/' \
+        Hubs/Spectator/SpectatorHub.cs \
+    && sed -i 's/.AddHostedService<TomYumPresencePublisher>();/.AddHostedService<TomYumPresencePublisher>().AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumPauseTracker>();/' Extensions/ServiceCollectionExtensions.cs \
+    && grep -q 'TomYumPauseTracker>()' Extensions/ServiceCollectionExtensions.cs
 RUN dotnet publish -c Release -o /out && rm -rf /out/runtimes /out/osu.Game.Resources.dll
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

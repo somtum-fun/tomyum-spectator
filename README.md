@@ -13,6 +13,11 @@ at a pinned commit and changes it in three small ways:
    they're doing to Redis (`tomyum:lazer-presence`, every 5 seconds). TomYum merges it with stable
    players and website visitors: the staff panel's online list, Discord's `/online` and status
    message, `!alert`, and the website's online graph.
+4. **Pauses for osu!dan.** `TomYumPauseTracker.cs` tells whether a lazer play was paused (lazer sends no
+   pause action; a pause leaves its frames permanently behind the clock). At the end of each play,
+   `tomyum:lazer-play:<score token>` gets `{pauses, paused_ms, bundles, rate, started_at, ended_at}` for a
+   day. `rate` is null when a mod changes the speed during the play (Wind Up/Down, Adaptive Speed): then the
+   pause numbers can't be trusted.
 
 ## Building
 
