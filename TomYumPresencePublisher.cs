@@ -49,6 +49,7 @@ namespace osu.Server.Spectator.Hubs.Metadata
                                            details = state.UserActivity?.GetDetails(),
                                            beatmap_id = state.UserActivity?.GetBeatmapID(),
                                            ruleset_id = (state.UserActivity as UserActivity.InGame)?.RulesetID,
+                                           version_hash = state.VersionHash,
                                        })))
                                        .ToArray();
 
