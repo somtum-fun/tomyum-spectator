@@ -11,6 +11,8 @@ WORKDIR /src/osu.Server.Spectator
 # ppy's packages are on 10.0.13 (October 2026's fixes), but ppy.osu.Game still brings MessagePack 3.1.8:
 # 3.1.9 fixes a denial of service (CVE-2026-92707), 3.1.10 a ReDoS.
 RUN dotnet add package MessagePack --version 3.1.12
+# MySqlConnector 2.6.1 fixes a password leak in zero-configuration TLS (GHSA-473q-m89c-ghf8); AutoMapper as in TomYum.
+RUN dotnet add package MySqlConnector --version 2.6.2 && dotnet add package AutoMapper --version 16.2.0
 RUN grep -q 'IScoreStorage, S3ScoreStorage>' Extensions/ServiceCollectionExtensions.cs \
     && sed -i 's/IScoreStorage, S3ScoreStorage>/IScoreStorage, FileScoreStorage>/' Extensions/ServiceCollectionExtensions.cs
 # ppy's build connects to MySQL without a password (their deployment authenticates otherwise):
