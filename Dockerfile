@@ -5,7 +5,7 @@
 # of Amazon S3, which ppy's build always uses. See TomYum docs/lazer.md.
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-env
 ARG SPECTATOR_REPO=https://github.com/ppy/osu-server-spectator
-ARG SPECTATOR_REF=eb52d25e44de269790828fabb245d45a1f7e86fa
+ARG SPECTATOR_REF=e5fb2ae26e36ec0dce32c6fcbcd053f70073a414
 RUN git clone "$SPECTATOR_REPO" /src && git -C /src checkout "$SPECTATOR_REF"
 WORKDIR /src/osu.Server.Spectator
 # ppy's packages are on 10.0.13 (October 2026's fixes), but ppy.osu.Game still brings MessagePack 3.1.8:
