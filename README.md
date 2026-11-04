@@ -19,6 +19,11 @@ at a pinned commit and changes it in three small ways:
    day. `rate` is null when a mod changes the speed during the play (Wind Up/Down, Adaptive Speed): then the
    pause numbers can't be trusted.
 
+5. **Custom rulesets.** `TomYumRulesets.cs` lets rooms, user styles and spectating use the custom lazer rulesets
+   TomYum's website pins (`tomyum_custom_rulesets`, ids 10 and up): the pinned DLL is downloaded, checked against its
+   SHA-256 and loaded beside osu!'s libraries (re-read every minute, so a new pin is picked up). osu!'s own four
+   rulesets are unchanged.
+
 ## Building
 
 TomYum's production compose builds it from a checkout next to TomYum:

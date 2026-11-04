@@ -33,6 +33,14 @@ RUN grep -q 'usage.Item.ScoreTokens.Add(scoreToken.Value);' Hubs/Spectator/Spect
         Hubs/Spectator/SpectatorHub.cs \
     && sed -i 's/.AddHostedService<TomYumPresencePublisher>();/.AddHostedService<TomYumPresencePublisher>().AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumPauseTracker>();/' Extensions/ServiceCollectionExtensions.cs \
     && grep -q 'TomYumPauseTracker>()' Extensions/ServiceCollectionExtensions.cs
+# Custom rulesets (rulesets.info, pinned on TomYum's website) in multiplayer and spectating: see TomYumRulesets.cs.
+COPY TomYumRulesets.cs TomYumRulesets.cs
+RUN grep -q 'throw new ArgumentException("Invalid ruleset ID provided.");' LegacyHelper.cs \
+    && sed -i 's/throw new ArgumentException("Invalid ruleset ID provided.");/return TomYumRulesets.Get(id);/' LegacyHelper.cs \
+    && test "$(grep -rlE '[A-Za-z.]+ < 0 \|\| [A-Za-z.]+ > ILegacyRuleset.MAX_LEGACY_RULESET_ID' --include=*.cs Hubs | wc -l)" = 3 \
+    && grep -rlE '[A-Za-z.]+ < 0 \|\| [A-Za-z.]+ > ILegacyRuleset.MAX_LEGACY_RULESET_ID' --include=*.cs Hubs \
+       | xargs perl -0pi -e 's/\b([A-Za-z.]+) < 0 \|\| \1 > ILegacyRuleset\.MAX_LEGACY_RULESET_ID/!osu.Server.Spectator.TomYumRulesets.IsKnown($1)/g' \
+    && ! grep -rq 'MAX_LEGACY_RULESET_ID' --include=*.cs Hubs
 RUN dotnet publish -c Release -o /out && rm -rf /out/runtimes /out/osu.Game.Resources.dll
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
