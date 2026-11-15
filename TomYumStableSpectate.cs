@@ -17,6 +17,7 @@ using osu.Game.Replays.Legacy;
 using osu.Game.Rulesets.Mods;
 using osu.Game.Rulesets.Scoring;
 using osu.Game.Users;
+using osu.Server.Spectator.Database;
 using osu.Server.Spectator.Entities;
 using osu.Server.Spectator.Hubs.Metadata;
 using StackExchange.Redis;
@@ -24,20 +25,16 @@ using StackExchange.Redis;
 namespace osu.Server.Spectator.Hubs.Spectator
 {
     /// <summary>
-    /// Experimental: osu!lazer players watch osu!(stable) players who turned it on (the website option
-    /// <c>tomyum_stable_lazer_spectate</c>). TomYum's <c>tomyum.stable-spectate</c> plugin keeps
-    /// <see cref="PLAYERS_KEY"/> (the opted-in stable players online) and publishes their frame bundles on
-    /// <see cref="FRAMES_CHANNEL"/>; this service
-    /// <list type="bullet">
-    /// <item>shows them in lazer's online list (an "osu!(stable)" activity while they play, so lazer offers Spectate),
-    /// unless they're on lazer too;</item>
-    /// <item>keeps <see cref="WATCHED_KEY"/>, the stable players someone here is watching (TomYum's bot then
-    /// spectates them, so their client streams its frames);</item>
-    /// <item>passes their frames to the watchers as lazer frames: the same replay frames, with the mods as lazer's
-    /// (plus Classic) and the score so far.</item>
-    /// </list>
-    /// SpectatorHub (StartWatchingUser, EndWatchingUser, a connection's clean-up) and MetadataHub
-    /// (BeginWatchingUserPresence) call in through the static methods.
+    /// Experimental: osu!lazer players watch osu!(stable) players. A TumThai client with "Show osu!(stable) players"
+    /// on calls <c>TomYumWatchStablePlayers(true)</c> on MetadataHub; only those clients get the stable players
+    /// (in the online list while they watch it, and their stable friends always), and only their users may
+    /// spectate them. TomYum's <c>tomyum.stable-spectate</c> plugin keeps <see cref="PLAYERS_KEY"/> (the stable
+    /// players online) and publishes the watched players' frame bundles on <see cref="FRAMES_CHANNEL"/>; this
+    /// service keeps <see cref="WATCHED_KEY"/> (who is watched: TomYum's bot then spectates them, so their client
+    /// streams its frames) and passes the frames to the watchers as lazer frames (the same replay frames, the mods
+    /// as lazer's plus Classic, the score so far). A player also on lazer shows lazer's own presence.
+    /// SpectatorHub (StartWatchingUser, EndWatchingUser, clean-up) and MetadataHub (TomYumWatchStablePlayers,
+    /// Begin/EndWatchingUserPresence, clean-up) call in through the static methods.
     /// </summary>
     public sealed class TomYumStableSpectate : BackgroundService
     {
@@ -52,30 +49,35 @@ namespace osu.Server.Spectator.Hubs.Spectator
 
         private static readonly ConcurrentDictionary<int, ConcurrentDictionary<string, byte>> watchers = new ConcurrentDictionary<int, ConcurrentDictionary<string, byte>>();
         private static readonly ConcurrentDictionary<int, SpectatorState> plays = new ConcurrentDictionary<int, SpectatorState>();
+        private static readonly ConcurrentDictionary<string, Subscriber> subscribers = new ConcurrentDictionary<string, Subscriber>();
+        private static readonly SemaphoreSlim sending = new SemaphoreSlim(1, 1);
         private static volatile Dictionary<int, StablePlayer> players = new Dictionary<int, StablePlayer>();
-        private static Dictionary<int, UserPresence?> shownPresences = new Dictionary<int, UserPresence?>();
+        private static volatile Dictionary<int, UserPresence> shown = new Dictionary<int, UserPresence>();
+        private static DateTimeOffset friendsReadAt = DateTimeOffset.MinValue;
 
         private static IHubContext<SpectatorHub>? spectatorHub;
         private static IHubContext<MetadataHub>? metadataHub;
         private static EntityStore<MetadataClientState>? metadataStore;
 
         private readonly IConnectionMultiplexer redis;
+        private readonly IDatabaseFactory databaseFactory;
 
-        public TomYumStableSpectate(IConnectionMultiplexer redis, IHubContext<SpectatorHub> spectatorHub, IHubContext<MetadataHub> metadataHub,
-                                    EntityStore<MetadataClientState> metadataStore)
+        public TomYumStableSpectate(IConnectionMultiplexer redis, IDatabaseFactory databaseFactory, IHubContext<SpectatorHub> spectatorHub,
+                                    IHubContext<MetadataHub> metadataHub, EntityStore<MetadataClientState> metadataStore)
         {
             this.redis = redis;
+            this.databaseFactory = databaseFactory;
             TomYumStableSpectate.spectatorHub = spectatorHub;
             TomYumStableSpectate.metadataHub = metadataHub;
             TomYumStableSpectate.metadataStore = metadataStore;
         }
 
         /// <summary>SpectatorHub.StartWatchingUser: a lazer player starts watching <paramref name="userId"/>.</summary>
-        public static async Task StartWatching(string connectionId, int userId)
+        public static async Task StartWatching(string connectionId, int watcherUserId, int userId)
         {
             try
             {
-                if (!players.TryGetValue(userId, out var player))
+                if (!players.TryGetValue(userId, out var player) || !subscribers.Values.Any(s => s.Enabled && s.UserId == watcherUserId))
                     return;
 
                 watchers.GetOrAdd(userId, _ => new ConcurrentDictionary<string, byte>())[connectionId] = 0;
@@ -98,25 +100,28 @@ namespace osu.Server.Spectator.Hubs.Spectator
                 watchers.TryRemove(userId, out _);
         }
 
-        /// <summary>MetadataHub.BeginWatchingUserPresence: the opted-in stable players for the new watcher.</summary>
-        public static async Task SendPresencesTo(string connectionId)
+        /// <summary>MetadataHub.TomYumWatchStablePlayers: a client turns "Show osu!(stable) players" on or off.</summary>
+        public static async Task SetEnabled(string connectionId, int userId, bool enabled)
         {
-            if (metadataHub == null)
-                return;
-
-            try
-            {
-                foreach (var (userId, presence) in shownPresences)
-                {
-                    if (presence != null)
-                        await metadataHub.Clients.Client(connectionId).SendAsync(nameof(IMetadataClient.UserPresenceUpdated), userId, presence);
-                }
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine($"TomYum stable spectate: sending presences failed: {e.Message}");
-            }
+            var subscriber = subscribers.GetOrAdd(connectionId, _ => new Subscriber(userId));
+            subscriber.Enabled = enabled;
+            if (enabled)
+                subscriber.FriendsStale = true;
+            await sendTo(connectionId, subscriber);
         }
+
+        /// <summary>MetadataHub.BeginWatchingUserPresence / EndWatchingUserPresence.</summary>
+        public static async Task SetWatchingAll(string connectionId, int userId, bool watching)
+        {
+            var subscriber = subscribers.GetOrAdd(connectionId, _ => new Subscriber(userId));
+            subscriber.WatchingAll = watching;
+            if (!watching)
+                subscriber.SentAll.Clear(); // the client forgets the online list itself
+            await sendTo(connectionId, subscriber);
+        }
+
+        /// <summary>MetadataHub's clean-up of a connection.</summary>
+        public static void Forget(string connectionId) => subscribers.TryRemove(connectionId, out _);
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
@@ -170,20 +175,34 @@ namespace osu.Server.Spectator.Hubs.Spectator
             int[] watched = watchers.Where(kv => !kv.Value.IsEmpty).Select(kv => kv.Key).ToArray();
             await db.StringSetAsync(WATCHED_KEY, JsonSerializer.Serialize(watched), TimeSpan.FromSeconds(10));
 
-            await updatePresences(next);
+            shown = presences(next);
+
+            // Friends lists: read again every minute (and right after a client turns it on).
+            bool readAll = DateTimeOffset.UtcNow - friendsReadAt > TimeSpan.FromMinutes(1);
+            if (readAll)
+                friendsReadAt = DateTimeOffset.UtcNow;
+            foreach (var subscriber in subscribers.Values.Where(s => s.Enabled && (readAll || s.FriendsStale)))
+            {
+                using (var database = databaseFactory.GetInstance())
+                    subscriber.Friends = new HashSet<int>(await database.GetUserFriendsAsync(subscriber.UserId));
+                subscriber.FriendsStale = false;
+            }
+
+            foreach (var (connectionId, subscriber) in subscribers)
+                await sendTo(connectionId, subscriber);
         }
 
-        private static async Task updatePresences(Dictionary<int, StablePlayer> next)
+        private static Dictionary<int, UserPresence> presences(Dictionary<int, StablePlayer> stablePlayers)
         {
-            var shown = new Dictionary<int, UserPresence?>();
+            var result = new Dictionary<int, UserPresence>();
 
-            foreach (var (userId, player) in next)
+            foreach (var (userId, player) in stablePlayers)
             {
                 // On lazer as well: lazer's own presence is the one shown.
                 if (metadataStore?.GetEntityUnsafe(userId)?.ToUserPresence() != null)
                     continue;
 
-                shown[userId] = new UserPresence
+                result[userId] = new UserPresence
                 {
                     Status = UserStatus.Online,
                     Activity = player.Playing && player.BeatmapId > 0
@@ -198,37 +217,71 @@ namespace osu.Server.Spectator.Hubs.Spectator
                 };
             }
 
-            if (metadataHub != null)
-            {
-                foreach (var (userId, presence) in shown)
-                {
-                    if (!shownPresences.TryGetValue(userId, out var before) || !samePresence(before, presence))
-                        await broadcastPresence(userId, presence);
-                }
+            return result;
+        }
 
-                foreach (int userId in shownPresences.Keys.Where(id => !shown.ContainsKey(id)))
+        /// <summary>Brings what a client was sent up to date: the online list (while it watches it) and its friends.</summary>
+        private static async Task sendTo(string connectionId, Subscriber subscriber)
+        {
+            if (metadataHub == null)
+                return;
+
+            await sending.WaitAsync();
+
+            try
+            {
+                var client = metadataHub.Clients.Client(connectionId);
+                var current = shown;
+
+                var wantAll = subscriber.Enabled && subscriber.WatchingAll ? current : new Dictionary<int, UserPresence>();
+                foreach (var (userId, message) in diff(subscriber.SentAll, wantAll))
+                    await client.SendAsync(nameof(IMetadataClient.UserPresenceUpdated), userId, message);
+
+                var wantFriends = subscriber.Enabled
+                    ? current.Where(kv => subscriber.Friends.Contains(kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value)
+                    : new Dictionary<int, UserPresence>();
+                foreach (var (userId, message) in diff(subscriber.SentFriends, wantFriends))
+                    await client.SendAsync(nameof(IMetadataClient.FriendPresenceUpdated), userId, message);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"TomYum stable spectate: sending presences failed: {e.Message}");
+            }
+            finally
+            {
+                sending.Release();
+            }
+        }
+
+        /// <summary>The updates that turn <paramref name="sent"/> into <paramref name="want"/> (null: gone), applied to <paramref name="sent"/>.</summary>
+        private static List<(int, UserPresence?)> diff(Dictionary<int, UserPresence> sent, Dictionary<int, UserPresence> want)
+        {
+            var updates = new List<(int, UserPresence?)>();
+
+            foreach (var (userId, presence) in want)
+            {
+                if (!sent.TryGetValue(userId, out var before) || !samePresence(before, presence))
                 {
-                    // Gone, or on lazer now (lazer's presence goes out from MetadataHub itself).
-                    if (metadataStore?.GetEntityUnsafe(userId)?.ToUserPresence() == null)
-                        await broadcastPresence(userId, null);
+                    updates.Add((userId, presence));
+                    sent[userId] = presence;
                 }
             }
 
-            shownPresences = shown;
+            foreach (int userId in sent.Keys.Where(id => !want.ContainsKey(id)).ToList())
+            {
+                sent.Remove(userId);
+                // Now on lazer: lazer's presence has gone out from MetadataHub itself, don't clear it.
+                if (metadataStore?.GetEntityUnsafe(userId)?.ToUserPresence() == null)
+                    updates.Add((userId, null));
+            }
+
+            return updates;
         }
 
-        private static Task broadcastPresence(int userId, UserPresence? presence) =>
-            Task.WhenAll(
-                metadataHub!.Clients.Group(MetadataHub.ONLINE_PRESENCE_WATCHERS_GROUP).SendAsync(nameof(IMetadataClient.UserPresenceUpdated), userId, presence),
-                metadataHub.Clients.Group(MetadataHub.FRIEND_PRESENCE_WATCHERS_GROUP(userId)).SendAsync(nameof(IMetadataClient.FriendPresenceUpdated), userId, presence));
-
-        private static bool samePresence(UserPresence? a, UserPresence? b)
+        private static bool samePresence(UserPresence a, UserPresence b)
         {
-            if (a == null || b == null)
-                return a == null && b == null;
-
-            var x = a.Value.Activity as UserActivity.InSoloGame;
-            var y = b.Value.Activity as UserActivity.InSoloGame;
+            var x = a.Activity as UserActivity.InSoloGame;
+            var y = b.Activity as UserActivity.InSoloGame;
             if (x == null || y == null)
                 return x == null && y == null;
 
@@ -383,7 +436,24 @@ namespace osu.Server.Spectator.Hubs.Spectator
 
         private static double ratio(double hit, double total) => total > 0 ? hit / total : 1;
 
-        /// <summary>One opted-in stable player in <see cref="PLAYERS_KEY"/> (the plugin's PlayerEntry).</summary>
+        /// <summary>A MetadataHub connection that asked for stable players (or watches the online list).</summary>
+        private sealed class Subscriber
+        {
+            public readonly int UserId;
+            public bool Enabled;
+            public bool WatchingAll;
+            public bool FriendsStale;
+            public HashSet<int> Friends = new HashSet<int>();
+            public readonly Dictionary<int, UserPresence> SentAll = new Dictionary<int, UserPresence>();
+            public readonly Dictionary<int, UserPresence> SentFriends = new Dictionary<int, UserPresence>();
+
+            public Subscriber(int userId)
+            {
+                UserId = userId;
+            }
+        }
+
+        /// <summary>One stable player online in <see cref="PLAYERS_KEY"/> (the plugin's PlayerEntry).</summary>
         public sealed class StablePlayer
         {
             public string Username { get; set; } = string.Empty;

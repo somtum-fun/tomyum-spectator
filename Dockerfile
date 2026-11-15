@@ -41,22 +41,29 @@ RUN grep -q 'throw new ArgumentException("Invalid ruleset ID provided.");' Legac
     && grep -rlE '[A-Za-z.]+ < 0 \|\| [A-Za-z.]+ > ILegacyRuleset.MAX_LEGACY_RULESET_ID' --include=*.cs Hubs \
        | xargs perl -0pi -e 's/\b([A-Za-z.]+) < 0 \|\| \1 > ILegacyRuleset\.MAX_LEGACY_RULESET_ID/!osu.Server.Spectator.TomYumRulesets.IsKnown($1)/g' \
     && ! grep -rq 'MAX_LEGACY_RULESET_ID' --include=*.cs Hubs
-# Experimental: lazer players watch stable players who turned it on (website option), with TomYum's
-# tomyum.stable-spectate plugin: see TomYumStableSpectate.cs.
+# Experimental: TumThai players with "Show osu!(stable) players" on see and watch osu!(stable) players, with TomYum's
+# tomyum.stable-spectate plugin: see TomYumStableSpectate.cs. TumThai calls TomYumWatchStablePlayers (a method added
+# to MetadataHub here); other clients never get stable players.
 COPY TomYumStableSpectate.cs Hubs/Spectator/TomYumStableSpectate.cs
 RUN grep -q 'Log(\$"Watching {userId}");' Hubs/Spectator/SpectatorHub.cs \
     && grep -q 'await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroupId(userId));' Hubs/Spectator/SpectatorHub.cs \
     && grep -q 'await Clients.User(watchedUserId.ToString()).UserEndedWatching(state.Item.UserId);' Hubs/Spectator/SpectatorHub.cs \
     && grep -q 'await Groups.AddToGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP);' Hubs/Metadata/MetadataHub.cs \
-    && sed -i -e 's/Log(\$"Watching {userId}");/Log($"Watching {userId}"); await TomYumStableSpectate.StartWatching(Context.ConnectionId, userId);/' \
+    && test "$(grep -c 'await base.CleanUpState(state);' Hubs/Metadata/MetadataHub.cs)" = 1 \
+    && grep -q '=> Groups.RemoveFromGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP);' Hubs/Metadata/MetadataHub.cs \
+    && sed -i -e 's/Log(\$"Watching {userId}");/Log($"Watching {userId}"); await TomYumStableSpectate.StartWatching(Context.ConnectionId, Context.GetUserId(), userId);/' \
         -e 's/await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroupId(userId));/await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroupId(userId)); TomYumStableSpectate.EndWatching(Context.ConnectionId, userId);/' \
         -e 's/await Clients.User(watchedUserId.ToString()).UserEndedWatching(state.Item.UserId);/{ TomYumStableSpectate.EndWatching(state.Item.ConnectionId, watchedUserId); await Clients.User(watchedUserId.ToString()).UserEndedWatching(state.Item.UserId); }/' \
         Hubs/Spectator/SpectatorHub.cs \
-    && sed -i 's/await Groups.AddToGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP);/await Groups.AddToGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP); await osu.Server.Spectator.Hubs.Spectator.TomYumStableSpectate.SendPresencesTo(Context.ConnectionId);/' Hubs/Metadata/MetadataHub.cs \
+    && sed -i -e 's/await Groups.AddToGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP);/await Groups.AddToGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP); await TomYumStableSpectate.SetWatchingAll(Context.ConnectionId, Context.GetUserId(), true);/' \
+        -e 's/await base.CleanUpState(state);/await base.CleanUpState(state); TomYumStableSpectate.Forget(state.Item.ConnectionId);/' \
+        -e 's/=> Groups.RemoveFromGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP);/{ await Groups.RemoveFromGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP); await TomYumStableSpectate.SetWatchingAll(Context.ConnectionId, Context.GetUserId(), false); }\n\n        public Task TomYumWatchStablePlayers(bool enabled) => TomYumStableSpectate.SetEnabled(Context.ConnectionId, Context.GetUserId(), enabled);/' \
+        -e 's/public Task EndWatchingUserPresence()/public async Task EndWatchingUserPresence()/' \
+        Hubs/Metadata/MetadataHub.cs \
     && sed -i 's/.AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumPauseTracker>();/.AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumPauseTracker>().AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumStableSpectate>();/' Extensions/ServiceCollectionExtensions.cs \
     && grep -q 'TomYumStableSpectate>()' Extensions/ServiceCollectionExtensions.cs \
     && test "$(grep -c TomYumStableSpectate Hubs/Spectator/SpectatorHub.cs)" = 3 \
-    && grep -q TomYumStableSpectate Hubs/Metadata/MetadataHub.cs
+    && test "$(grep -c TomYumStableSpectate Hubs/Metadata/MetadataHub.cs)" = 4
 RUN dotnet publish -c Release -o /out && rm -rf /out/runtimes /out/osu.Game.Resources.dll
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
