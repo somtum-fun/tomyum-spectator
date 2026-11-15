@@ -41,6 +41,22 @@ RUN grep -q 'throw new ArgumentException("Invalid ruleset ID provided.");' Legac
     && grep -rlE '[A-Za-z.]+ < 0 \|\| [A-Za-z.]+ > ILegacyRuleset.MAX_LEGACY_RULESET_ID' --include=*.cs Hubs \
        | xargs perl -0pi -e 's/\b([A-Za-z.]+) < 0 \|\| \1 > ILegacyRuleset\.MAX_LEGACY_RULESET_ID/!osu.Server.Spectator.TomYumRulesets.IsKnown($1)/g' \
     && ! grep -rq 'MAX_LEGACY_RULESET_ID' --include=*.cs Hubs
+# Experimental: lazer players watch stable players who turned it on (website option), with TomYum's
+# tomyum.stable-spectate plugin: see TomYumStableSpectate.cs.
+COPY TomYumStableSpectate.cs Hubs/Spectator/TomYumStableSpectate.cs
+RUN grep -q 'Log(\$"Watching {userId}");' Hubs/Spectator/SpectatorHub.cs \
+    && grep -q 'await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroupId(userId));' Hubs/Spectator/SpectatorHub.cs \
+    && grep -q 'await Clients.User(watchedUserId.ToString()).UserEndedWatching(state.Item.UserId);' Hubs/Spectator/SpectatorHub.cs \
+    && grep -q 'await Groups.AddToGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP);' Hubs/Metadata/MetadataHub.cs \
+    && sed -i -e 's/Log(\$"Watching {userId}");/Log($"Watching {userId}"); await TomYumStableSpectate.StartWatching(Context.ConnectionId, userId);/' \
+        -e 's/await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroupId(userId));/await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroupId(userId)); TomYumStableSpectate.EndWatching(Context.ConnectionId, userId);/' \
+        -e 's/await Clients.User(watchedUserId.ToString()).UserEndedWatching(state.Item.UserId);/{ TomYumStableSpectate.EndWatching(state.Item.ConnectionId, watchedUserId); await Clients.User(watchedUserId.ToString()).UserEndedWatching(state.Item.UserId); }/' \
+        Hubs/Spectator/SpectatorHub.cs \
+    && sed -i 's/await Groups.AddToGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP);/await Groups.AddToGroupAsync(Context.ConnectionId, ONLINE_PRESENCE_WATCHERS_GROUP); await osu.Server.Spectator.Hubs.Spectator.TomYumStableSpectate.SendPresencesTo(Context.ConnectionId);/' Hubs/Metadata/MetadataHub.cs \
+    && sed -i 's/.AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumPauseTracker>();/.AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumPauseTracker>().AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumStableSpectate>();/' Extensions/ServiceCollectionExtensions.cs \
+    && grep -q 'TomYumStableSpectate>()' Extensions/ServiceCollectionExtensions.cs \
+    && test "$(grep -c TomYumStableSpectate Hubs/Spectator/SpectatorHub.cs)" = 3 \
+    && grep -q TomYumStableSpectate Hubs/Metadata/MetadataHub.cs
 RUN dotnet publish -c Release -o /out && rm -rf /out/runtimes /out/osu.Game.Resources.dll
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

@@ -24,6 +24,11 @@ at a pinned commit and changes it in three small ways:
    SHA-256 and loaded beside osu!'s libraries (re-read every minute, so a new pin is picked up). osu!'s own four
    rulesets are unchanged.
 
+6. **Stable players, watched from lazer (experimental).** `TomYumStableSpectate.cs` shows osu!(stable) players who
+   turned on the website option `tomyum_stable_lazer_spectate` in lazer's online list, and passes their frames
+   (from TomYum's `tomyum.stable-spectate` plugin, over Redis) to whoever watches them. See the plugin's README in
+   TomYum (`plugins/tomyum-stable-spectate`).
+
 ## Building
 
 TomYum's production compose builds it from a checkout next to TomYum:
