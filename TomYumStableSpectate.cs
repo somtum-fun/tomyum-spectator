@@ -373,52 +373,87 @@ namespace osu.Server.Spectator.Hubs.Spectator
             await spectatorHub.Clients.Group(SpectatorHub.GetGroupId(userId)).SendAsync(nameof(ISpectatorClient.UserFinishedPlaying), userId, state);
         }
 
+        private static readonly ConcurrentDictionary<int, ScoreProcessor> score_processors = new ConcurrentDictionary<int, ScoreProcessor>();
+
+        /// <summary>
+        /// The frame header for a stable score frame. Lazer recomputes the shown score and accuracy from
+        /// <see cref="ScoreProcessorStatistics"/> (ScoreProcessor.ResetFromReplayFrame), so those are filled in from
+        /// stable's counts: the accuracy part exactly (lazer's base score of each judgement and of its best result),
+        /// the combo part estimated (stable sends counts, not each hit's combo: one run as long as the max combo,
+        /// the other hits shared out between the misses).
+        /// </summary>
         private static FrameHeader header(SpectatorState state, StableScore? score)
         {
             var statistics = new Dictionary<HitResult, int>();
+            var processorStatistics = new ScoreProcessorStatistics();
             double accuracy = 1;
 
             if (score != null)
             {
-                switch (state.RulesetID)
+                int rulesetId = state.RulesetID ?? 0;
+                // (result, count, best result, counts towards combo)
+                var counts = rulesetId switch
                 {
-                    case 1: // taiko
-                        statistics[HitResult.Great] = score.Count300;
-                        statistics[HitResult.Ok] = score.Count100;
-                        statistics[HitResult.Miss] = score.CountMiss;
-                        accuracy = ratio(score.Count300 + score.Count100 * 0.5, score.Count300 + score.Count100 + score.CountMiss);
-                        break;
+                    1 => new[]
+                    {
+                        (HitResult.Great, score.Count300, HitResult.Great, true),
+                        (HitResult.Ok, score.Count100, HitResult.Great, true),
+                        (HitResult.Miss, score.CountMiss, HitResult.Great, true),
+                    },
+                    2 => new[]
+                    {
+                        (HitResult.Great, score.Count300, HitResult.Great, true),
+                        (HitResult.LargeTickHit, score.Count100, HitResult.LargeTickHit, true),
+                        (HitResult.SmallTickHit, score.Count50, HitResult.SmallTickHit, false),
+                        (HitResult.SmallTickMiss, score.CountKatu, HitResult.SmallTickHit, false),
+                        (HitResult.Miss, score.CountMiss, HitResult.Great, true),
+                    },
+                    3 => new[]
+                    {
+                        (HitResult.Perfect, score.CountGeki, HitResult.Perfect, true),
+                        (HitResult.Great, score.Count300, HitResult.Perfect, true),
+                        (HitResult.Good, score.CountKatu, HitResult.Perfect, true),
+                        (HitResult.Ok, score.Count100, HitResult.Perfect, true),
+                        (HitResult.Meh, score.Count50, HitResult.Perfect, true),
+                        (HitResult.Miss, score.CountMiss, HitResult.Perfect, true),
+                    },
+                    _ => new[]
+                    {
+                        (HitResult.Great, score.Count300, HitResult.Great, true),
+                        (HitResult.Ok, score.Count100, HitResult.Great, true),
+                        (HitResult.Meh, score.Count50, HitResult.Great, true),
+                        (HitResult.Miss, score.CountMiss, HitResult.Great, true),
+                    },
+                };
 
-                    case 2: // catch
-                        statistics[HitResult.Great] = score.Count300;
-                        statistics[HitResult.LargeTickHit] = score.Count100;
-                        statistics[HitResult.SmallTickHit] = score.Count50;
-                        statistics[HitResult.SmallTickMiss] = score.CountKatu;
-                        statistics[HitResult.Miss] = score.CountMiss;
-                        accuracy = ratio(score.Count300 + score.Count100 + score.Count50,
-                            score.Count300 + score.Count100 + score.Count50 + score.CountKatu + score.CountMiss);
-                        break;
+                var processor = score_processors.GetOrAdd(rulesetId, id => LegacyHelper.GetRulesetFromLegacyID(id).CreateScoreProcessor());
+                int comboHits = 0;
+                double comboBase = 0;
 
-                    case 3: // mania
-                        statistics[HitResult.Perfect] = score.CountGeki;
-                        statistics[HitResult.Great] = score.Count300;
-                        statistics[HitResult.Good] = score.CountKatu;
-                        statistics[HitResult.Ok] = score.Count100;
-                        statistics[HitResult.Meh] = score.Count50;
-                        statistics[HitResult.Miss] = score.CountMiss;
-                        accuracy = ratio((score.CountGeki + score.Count300) * 300 + score.CountKatu * 200 + score.Count100 * 100 + score.Count50 * 50,
-                            (score.CountGeki + score.Count300 + score.CountKatu + score.Count100 + score.Count50 + score.CountMiss) * 300.0);
-                        break;
+                foreach (var (result, count, best, combo) in counts)
+                {
+                    statistics[result] = count;
+                    if (count <= 0)
+                        continue;
 
-                    default: // osu!
-                        statistics[HitResult.Great] = score.Count300;
-                        statistics[HitResult.Ok] = score.Count100;
-                        statistics[HitResult.Meh] = score.Count50;
-                        statistics[HitResult.Miss] = score.CountMiss;
-                        accuracy = ratio(score.Count300 * 300 + score.Count100 * 100 + score.Count50 * 50,
-                            (score.Count300 + score.Count100 + score.Count50 + score.CountMiss) * 300.0);
-                        break;
+                    if (best.AffectsAccuracy())
+                    {
+                        processorStatistics.MaximumBaseScore += (double)processor.GetBaseScoreForResult(best) * count;
+                        processorStatistics.AccuracyJudgementCount += count;
+                    }
+
+                    if (result.AffectsAccuracy())
+                        processorStatistics.BaseScore += (double)processor.GetBaseScoreForResult(result) * count;
+
+                    if (combo && result.IsHit())
+                    {
+                        comboHits += count;
+                        comboBase += (double)processor.GetBaseScoreForResult(best) * count;
+                    }
                 }
+
+                accuracy = ratio(processorStatistics.BaseScore, processorStatistics.MaximumBaseScore);
+                processorStatistics.ComboPortion = comboPortion(comboHits, comboHits > 0 ? comboBase / comboHits : 0, score.MaxCombo, score.CountMiss);
             }
 
             return new FrameHeader(
@@ -427,11 +462,35 @@ namespace osu.Server.Spectator.Hubs.Spectator
                 score?.Combo ?? 0,
                 score?.MaxCombo ?? 0,
                 statistics,
-                new ScoreProcessorStatistics(),
+                processorStatistics,
                 DateTimeOffset.Now,
                 state.Mods.ToArray(),
                 null,
                 null);
+        }
+
+        /// <summary>
+        /// Lazer's combo portion (base score × combo^0.5 for each hit) for <paramref name="hits"/> hits: one run of
+        /// <paramref name="maxCombo"/>, the rest in equal runs between the misses.
+        /// </summary>
+        private static double comboPortion(int hits, double baseScore, int maxCombo, int misses)
+        {
+            static double run(int length)
+            {
+                double sum = 0;
+                for (int c = 1; c <= length; c++)
+                    sum += Math.Pow(c, ScoreProcessor.COMBO_EXPONENT);
+                return sum;
+            }
+
+            int longest = Math.Clamp(maxCombo, 0, hits);
+            int rest = hits - longest;
+            int otherRuns = Math.Max(1, misses);
+            double total = run(longest);
+            if (rest > 0)
+                total += otherRuns * run(rest / otherRuns) + run(rest % otherRuns);
+
+            return total * baseScore;
         }
 
         private static double ratio(double hit, double total) => total > 0 ? hit / total : 1;
