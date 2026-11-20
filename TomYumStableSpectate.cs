@@ -49,6 +49,10 @@ namespace osu.Server.Spectator.Hubs.Spectator
 
         private static readonly ConcurrentDictionary<int, ConcurrentDictionary<string, byte>> watchers = new ConcurrentDictionary<int, ConcurrentDictionary<string, byte>>();
         private static readonly ConcurrentDictionary<int, SpectatorState> plays = new ConcurrentDictionary<int, SpectatorState>();
+
+        // The last frame time sent to the watchers of each play: an older frame (stable sometimes repeats or reorders a
+        // few) is dropped, as lazer's replay can't go back in time.
+        private static readonly ConcurrentDictionary<int, float> last_frame_time = new ConcurrentDictionary<int, float>();
         private static readonly ConcurrentDictionary<string, Subscriber> subscribers = new ConcurrentDictionary<string, Subscriber>();
         private static readonly SemaphoreSlim sending = new SemaphoreSlim(1, 1);
         private static volatile Dictionary<int, StablePlayer> players = new Dictionary<int, StablePlayer>();
@@ -127,7 +131,10 @@ namespace osu.Server.Spectator.Hubs.Spectator
         {
             try
             {
-                await redis.GetSubscriber().SubscribeAsync(RedisChannel.Literal(FRAMES_CHANNEL), (channel, message) => { _ = onFrames(message); });
+                // One bundle at a time, in the order they came: two handled at once could reach the watchers swapped, and lazer
+                // can't play frames that go back in time (FramedReplayInputHandler throws).
+                var queue = await redis.GetSubscriber().SubscribeAsync(RedisChannel.Literal(FRAMES_CHANNEL));
+                queue.OnMessage(message => onFrames(message.Message));
             }
             catch (Exception e) when (e is RedisException or TimeoutException)
             {
@@ -316,11 +323,21 @@ namespace osu.Server.Spectator.Hubs.Spectator
 
                 if (m.Frames.Length > 0)
                 {
-                    var frames = m.Frames
-                                  .Where(f => f.Length >= 4)
-                                  .Select(f => new LegacyReplayFrame(f[0], f[1], f[2], (ReplayButtonState)(int)f[3]))
-                                  .ToList();
-                    await group.SendAsync(nameof(ISpectatorClient.UserSentFrames), userId, new FrameDataBundle(header(state, m.Score), frames));
+                    float last = last_frame_time.GetValueOrDefault(userId, float.MinValue);
+                    var frames = new List<LegacyReplayFrame>();
+
+                    foreach (var f in m.Frames.Where(f => f.Length >= 4))
+                    {
+                        if (f[0] < last)
+                            continue;
+
+                        last = f[0];
+                        frames.Add(new LegacyReplayFrame(f[0], f[1], f[2], (ReplayButtonState)(int)f[3]));
+                    }
+
+                    last_frame_time[userId] = last;
+                    if (frames.Count > 0)
+                        await group.SendAsync(nameof(ISpectatorClient.UserSentFrames), userId, new FrameDataBundle(header(state, m.Score), frames));
                 }
 
                 switch (m.Action)
@@ -361,6 +378,7 @@ namespace osu.Server.Spectator.Hubs.Spectator
                 State = SpectatedUserState.Playing,
             };
             plays[userId] = state;
+            last_frame_time.TryRemove(userId, out _);
             return state;
         }
 
