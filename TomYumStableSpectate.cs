@@ -42,12 +42,15 @@ namespace osu.Server.Spectator.Hubs.Spectator
         public const string WATCHED_KEY = "tomyum:stable-spectate:watched";
         public const string FRAMES_CHANNEL = "tomyum:stable-spectate:frames";
 
+        /// <summary>Who on lazer watches each stable player (<c>{"player id": [watcher ids]}</c>), so the player's client can show them.</summary>
+        public const string WATCHERS_KEY = "tomyum:stable-spectate:watchers";
+
         private const string playing_verb = "Playing on osu!(stable) (experimental)";
 
         private static readonly TimeSpan interval = TimeSpan.FromSeconds(2);
         private static readonly JsonSerializerOptions json = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-        private static readonly ConcurrentDictionary<int, ConcurrentDictionary<string, byte>> watchers = new ConcurrentDictionary<int, ConcurrentDictionary<string, byte>>();
+        private static readonly ConcurrentDictionary<int, ConcurrentDictionary<string, int>> watchers = new ConcurrentDictionary<int, ConcurrentDictionary<string, int>>();
         private static readonly ConcurrentDictionary<int, SpectatorState> plays = new ConcurrentDictionary<int, SpectatorState>();
 
         // The last frame time sent to the watchers of each play: an older frame (stable sometimes repeats or reorders a
@@ -84,7 +87,7 @@ namespace osu.Server.Spectator.Hubs.Spectator
                 if (!players.TryGetValue(userId, out var player) || !subscribers.Values.Any(s => s.Enabled && s.UserId == watcherUserId))
                     return;
 
-                watchers.GetOrAdd(userId, _ => new ConcurrentDictionary<string, byte>())[connectionId] = 0;
+                watchers.GetOrAdd(userId, _ => new ConcurrentDictionary<string, int>())[connectionId] = watcherUserId;
 
                 // Mid-play: the watcher gets the play now, and its frames once the bot has joined.
                 var state = plays.TryGetValue(userId, out var current) ? current : player.Playing ? begin(userId, player) : null;
@@ -181,6 +184,9 @@ namespace osu.Server.Spectator.Hubs.Spectator
 
             int[] watched = watchers.Where(kv => !kv.Value.IsEmpty).Select(kv => kv.Key).ToArray();
             await db.StringSetAsync(WATCHED_KEY, JsonSerializer.Serialize(watched), TimeSpan.FromSeconds(10));
+            var watcherIds = watchers.Where(kv => !kv.Value.IsEmpty)
+                                     .ToDictionary(kv => kv.Key.ToString(CultureInfo.InvariantCulture), kv => kv.Value.Values.Distinct().ToArray());
+            await db.StringSetAsync(WATCHERS_KEY, JsonSerializer.Serialize(watcherIds), TimeSpan.FromSeconds(10));
 
             shown = presences(next);
 
