@@ -175,7 +175,10 @@ namespace osu.Server.Spectator.Hubs.Spectator
             foreach (int userId in plays.Keys)
             {
                 if (!next.TryGetValue(userId, out var p) || !p.Playing)
+                {
+                    Console.WriteLine($"TomYum stable spectate: {userId} stopped playing (status {p?.Action}) with no last bundle: quit");
                     await finish(userId, SpectatedUserState.Quit);
+                }
             }
 
             // Watchers of a player who's gone: nothing more to watch.
@@ -345,6 +348,9 @@ namespace osu.Server.Spectator.Hubs.Spectator
                     if (frames.Count > 0)
                         await group.SendAsync(nameof(ISpectatorClient.UserSentFrames), userId, new FrameDataBundle(header(state, m.Score), frames));
                 }
+
+                if (m.Action != 0)
+                    Console.WriteLine($"TomYum stable spectate: {userId} bundle action {m.Action}, {m.Frames.Length} frames");
 
                 switch (m.Action)
                 {
@@ -541,6 +547,7 @@ namespace osu.Server.Spectator.Hubs.Spectator
         {
             public string Username { get; set; } = string.Empty;
             public bool Playing { get; set; }
+            public byte Action { get; set; }
             public string Info { get; set; } = string.Empty;
             public long BeatmapId { get; set; }
             public int Mode { get; set; }
