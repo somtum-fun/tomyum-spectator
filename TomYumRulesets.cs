@@ -30,6 +30,16 @@ namespace osu.Server.Spectator
 
         private sealed record Pin(int Id, string DownloadUrl, string Sha256);
 
+        // The custom rulesets' assemblies by name. Each lives in its own load context, which Type.GetType can't see, so
+        // osu!'s RulesetInfo.CreateInstance (used when a play ends, to work out its rank) gets them from here.
+        private static readonly ConcurrentDictionary<string, Assembly> loaded_assemblies = new ConcurrentDictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase);
+
+        static TomYumRulesets()
+        {
+            AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
+                loaded_assemblies.TryGetValue(new AssemblyName(args.Name).Name ?? string.Empty, out var assembly) ? assembly : null;
+        }
+
         /// <summary>Whether <paramref name="id"/> is osu!'s or an enabled custom ruleset (no id: nothing to check).</summary>
         public static bool IsKnown(int? id) => id is null || id is >= 0 and <= 3 || pinFor(id.Value) != null;
 
@@ -86,6 +96,8 @@ namespace osu.Server.Spectator
         public static Ruleset Load(byte[] dll, int id)
         {
             var assembly = new RulesetLoadContext(id).LoadFromStream(new MemoryStream(dll, false));
+            if (assembly.GetName().Name is string name)
+                loaded_assemblies[name] = assembly;
             Type[] types;
 
             try
