@@ -56,6 +56,11 @@ namespace osu.Server.Spectator.Hubs.Spectator
         // The last frame time sent to the watchers of each play: an older frame (stable sometimes repeats or reorders a
         // few) is dropped, as lazer's replay can't go back in time.
         private static readonly ConcurrentDictionary<int, float> last_frame_time = new ConcurrentDictionary<int, float>();
+
+        // When each play's last bundle came. A play whose player stopped playing isn't quit until none has come for a while:
+        // stable's status changes before its last bundle (passed or failed) arrives, and that bundle gives lazer the results.
+        private static readonly ConcurrentDictionary<int, DateTimeOffset> last_bundle_at = new ConcurrentDictionary<int, DateTimeOffset>();
+        private static readonly TimeSpan last_bundle_wait = TimeSpan.FromSeconds(10);
         private static readonly ConcurrentDictionary<string, Subscriber> subscribers = new ConcurrentDictionary<string, Subscriber>();
         private static readonly SemaphoreSlim sending = new SemaphoreSlim(1, 1);
         private static volatile Dictionary<int, StablePlayer> players = new Dictionary<int, StablePlayer>();
@@ -176,6 +181,9 @@ namespace osu.Server.Spectator.Hubs.Spectator
             {
                 if (!next.TryGetValue(userId, out var p) || !p.Playing)
                 {
+                    if (last_bundle_at.TryGetValue(userId, out var at) && DateTimeOffset.UtcNow - at < last_bundle_wait)
+                        continue;
+
                     Console.WriteLine($"TomYum stable spectate: {userId} stopped playing (status {p?.Action}) with no last bundle: quit");
                     await finish(userId, SpectatedUserState.Quit);
                 }
@@ -349,6 +357,7 @@ namespace osu.Server.Spectator.Hubs.Spectator
                         await group.SendAsync(nameof(ISpectatorClient.UserSentFrames), userId, new FrameDataBundle(header(state, m.Score), frames));
                 }
 
+                last_bundle_at[userId] = DateTimeOffset.UtcNow;
                 if (m.Action != 0)
                     Console.WriteLine($"TomYum stable spectate: {userId} bundle action {m.Action}, {m.Frames.Length} frames");
 
@@ -396,6 +405,7 @@ namespace osu.Server.Spectator.Hubs.Spectator
 
         private static async Task finish(int userId, SpectatedUserState how)
         {
+            last_bundle_at.TryRemove(userId, out _);
             if (!plays.TryRemove(userId, out var state) || spectatorHub == null)
                 return;
 
