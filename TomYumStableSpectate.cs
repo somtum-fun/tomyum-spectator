@@ -32,7 +32,7 @@ namespace osu.Server.Spectator.Hubs.Spectator
     /// players online) and publishes the watched players' frame bundles on <see cref="FRAMES_CHANNEL"/>; this
     /// service keeps <see cref="WATCHED_KEY"/> (who is watched: TomYum's bot then spectates them, so their client
     /// streams its frames) and passes the frames to the watchers as lazer frames (the same replay frames, the mods
-    /// as lazer's plus Classic, the score so far). A player also on lazer shows lazer's own presence.
+    /// as lazer's plus Classic, the score so far). A player also online on lazer shows lazer's own presence and is spectated on lazer only: the bridge stays out (StartWatching, frames).
     /// SpectatorHub (StartWatchingUser, EndWatchingUser, clean-up) and MetadataHub (TomYumWatchStablePlayers,
     /// Begin/EndWatchingUserPresence, clean-up) call in through the static methods.
     /// </summary>
@@ -90,6 +90,9 @@ namespace osu.Server.Spectator.Hubs.Spectator
             try
             {
                 if (!players.TryGetValue(userId, out var player) || !subscribers.Values.Any(s => s.Enabled && s.UserId == watcherUserId))
+                    return;
+                // Online on lazer too: the watcher gets lazer's own play (SpectatorHub), never the stable one alongside it.
+                if (onLazer(userId))
                     return;
 
                 watchers.GetOrAdd(userId, _ => new ConcurrentDictionary<string, int>())[connectionId] = watcherUserId;
@@ -223,7 +226,7 @@ namespace osu.Server.Spectator.Hubs.Spectator
             foreach (var (userId, player) in stablePlayers)
             {
                 // On lazer as well: lazer's own presence is the one shown.
-                if (metadataStore?.GetEntityUnsafe(userId)?.ToUserPresence() != null)
+                if (onLazer(userId))
                     continue;
 
                 result[userId] = new UserPresence
@@ -295,7 +298,7 @@ namespace osu.Server.Spectator.Hubs.Spectator
             {
                 sent.Remove(userId);
                 // Now on lazer: lazer's presence has gone out from MetadataHub itself, don't clear it.
-                if (metadataStore?.GetEntityUnsafe(userId)?.ToUserPresence() == null)
+                if (!onLazer(userId))
                     updates.Add((userId, null));
             }
 
@@ -324,7 +327,17 @@ namespace osu.Server.Spectator.Hubs.Spectator
                 if (!watchers.TryGetValue(userId, out var set) || set.IsEmpty)
                     return;
 
-                var group = spectatorHub.Clients.Group(SpectatorHub.GetGroupId(userId));
+                // Online on lazer as well: lazer's play is the one watched. A stable play already shown ends here, so the two
+                // never mix in one watcher's view.
+                if (onLazer(userId))
+                {
+                    if (plays.ContainsKey(userId))
+                        await finish(userId, SpectatedUserState.Quit);
+                    return;
+                }
+
+                // Only the watchers who asked for stable players (StartWatching), not everyone in the player's lazer group.
+                var group = spectatorHub.Clients.Clients(set.Keys.ToList());
 
                 // A new song (or another map than the play we know): a new play for the watchers.
                 if (m.Action == 1 || !plays.TryGetValue(userId, out var state) || state.BeatmapID != (int)m.BeatmapId)
@@ -410,8 +423,12 @@ namespace osu.Server.Spectator.Hubs.Spectator
                 return;
 
             state.State = how;
-            await spectatorHub.Clients.Group(SpectatorHub.GetGroupId(userId)).SendAsync(nameof(ISpectatorClient.UserFinishedPlaying), userId, state);
+            if (watchers.TryGetValue(userId, out var set) && !set.IsEmpty)
+                await spectatorHub.Clients.Clients(set.Keys.ToList()).SendAsync(nameof(ISpectatorClient.UserFinishedPlaying), userId, state);
         }
+
+        /// <summary>Whether <paramref name="userId"/> is online on lazer (MetadataHub has their presence).</summary>
+        private static bool onLazer(int userId) => metadataStore?.GetEntityUnsafe(userId)?.ToUserPresence() != null;
 
         private static readonly ConcurrentDictionary<int, ScoreProcessor> score_processors = new ConcurrentDictionary<int, ScoreProcessor>();
 
