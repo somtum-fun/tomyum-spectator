@@ -64,6 +64,18 @@ RUN grep -q 'Log(\$"Watching {userId}");' Hubs/Spectator/SpectatorHub.cs \
     && grep -q 'TomYumStableSpectate>()' Extensions/ServiceCollectionExtensions.cs \
     && test "$(grep -c TomYumStableSpectate Hubs/Spectator/SpectatorHub.cs)" = 3 \
     && test "$(grep -c TomYumStableSpectate Hubs/Metadata/MetadataHub.cs)" = 4
+# A player's frames reach their spectators in time order (one sending frames that go back in time would close every
+# watcher's game): see TomYumFrameOrder.cs.
+COPY TomYumFrameOrder.cs Hubs/Spectator/TomYumFrameOrder.cs
+RUN test "$(grep -c 'await Clients.Group(GetGroupId(Context.GetUserId())).UserSentFrames(Context.GetUserId(), data);' Hubs/Spectator/SpectatorHub.cs)" = 2 \
+    && sed -i 's/await Clients.Group(GetGroupId(Context.GetUserId())).UserSentFrames(Context.GetUserId(), data);/var ordered = TomYumFrameOrder.Filter(Context.GetUserId(), data); if (ordered != null) await Clients.Group(GetGroupId(Context.GetUserId())).UserSentFrames(Context.GetUserId(), ordered);/' Hubs/Spectator/SpectatorHub.cs \
+    && perl -0pi -e 's/(public async Task BeginPlaySession\(long\? scoreToken, SpectatorState state\)\s*\{)/$1 TomYumFrameOrder.Reset(Context.GetUserId());/' Hubs/Spectator/SpectatorHub.cs \
+    && test "$(grep -c 'TomYumFrameOrder' Hubs/Spectator/SpectatorHub.cs)" = 3
+# Ranked Play: the results stage waits for scores while it holds the room's lock; see patch-results-wait.pl.
+COPY patch-results-wait.pl /tmp/patch-results-wait.pl
+RUN f=Hubs/Multiplayer/Matchmaking/RankedPlay/Stages/ResultsStage.cs \
+    && perl /tmp/patch-results-wait.pl < "$f" > "$f.new" && mv "$f.new" "$f" \
+    && grep -q 'patch-results-wait.pl' "$f"
 RUN dotnet publish -c Release -o /out && rm -rf /out/runtimes /out/osu.Game.Resources.dll
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
