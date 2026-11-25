@@ -74,6 +74,11 @@ RUN test "$(grep -c 'await Clients.Group(GetGroupId(Context.GetUserId())).UserSe
     && test "$(grep -c 'TomYumFrameOrder.Filter' Hubs/Spectator/SpectatorHub.cs)" = 2 \
     && test "$(grep -c 'TomYumFrameOrder.Reset' Hubs/Spectator/SpectatorHub.cs)" = 4 \
     && test "$(grep -A1 -E 'public async Task (Begin|End)PlaySession(V2)?\(' Hubs/Spectator/SpectatorHub.cs | grep -c 'TomYumFrameOrder.Reset')" = 4
+# Realtime rooms a previous run left open (a restart doesn't wait for rooms to close) are closed at start, so their
+# hosts can make rooms again: see TomYumOrphanedRooms.cs.
+COPY TomYumOrphanedRooms.cs Hubs/Multiplayer/TomYumOrphanedRooms.cs
+RUN sed -i 's/.AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumStableSpectate>();/.AddHostedService<osu.Server.Spectator.Hubs.Spectator.TomYumStableSpectate>().AddHostedService<osu.Server.Spectator.Hubs.Multiplayer.TomYumOrphanedRooms>();/' Extensions/ServiceCollectionExtensions.cs \
+    && grep -q 'TomYumOrphanedRooms>()' Extensions/ServiceCollectionExtensions.cs
 # Ranked Play: the results stage waits for scores while it holds the room's lock; see patch-results-wait.pl.
 COPY patch-results-wait.pl /tmp/patch-results-wait.pl
 RUN f=Hubs/Multiplayer/Matchmaking/RankedPlay/Stages/ResultsStage.cs \
