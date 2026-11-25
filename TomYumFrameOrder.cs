@@ -16,7 +16,7 @@ namespace osu.Server.Spectator.Hubs.Spectator
     {
         private static readonly ConcurrentDictionary<int, double> last_time = new ConcurrentDictionary<int, double>();
 
-        /// <summary>BeginPlaySession: a new play, from its own start.</summary>
+        /// <summary>Begin/EndPlaySession (and their V2): a new play starts its time again.</summary>
         public static void Reset(int userId) => last_time.TryRemove(userId, out _);
 
         /// <summary>The bundle with only the frames not earlier than the last one relayed; null when none are left.</summary>

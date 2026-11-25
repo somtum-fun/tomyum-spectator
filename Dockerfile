@@ -65,12 +65,15 @@ RUN grep -q 'Log(\$"Watching {userId}");' Hubs/Spectator/SpectatorHub.cs \
     && test "$(grep -c TomYumStableSpectate Hubs/Spectator/SpectatorHub.cs)" = 3 \
     && test "$(grep -c TomYumStableSpectate Hubs/Metadata/MetadataHub.cs)" = 4
 # A player's frames reach their spectators in time order (one sending frames that go back in time would close every
-# watcher's game): see TomYumFrameOrder.cs.
+# watcher's game): see TomYumFrameOrder.cs. Reset when each play begins and ends, in both the old and the V2 hub
+# methods (current lazer uses V2; missing it dropped every frame and live score from a room's second map on).
 COPY TomYumFrameOrder.cs Hubs/Spectator/TomYumFrameOrder.cs
 RUN test "$(grep -c 'await Clients.Group(GetGroupId(Context.GetUserId())).UserSentFrames(Context.GetUserId(), data);' Hubs/Spectator/SpectatorHub.cs)" = 2 \
     && sed -i 's/await Clients.Group(GetGroupId(Context.GetUserId())).UserSentFrames(Context.GetUserId(), data);/var ordered = TomYumFrameOrder.Filter(Context.GetUserId(), data); if (ordered != null) await Clients.Group(GetGroupId(Context.GetUserId())).UserSentFrames(Context.GetUserId(), ordered);/' Hubs/Spectator/SpectatorHub.cs \
-    && perl -0pi -e 's/(public async Task BeginPlaySession\(long\? scoreToken, SpectatorState state\)\s*\{)/$1 TomYumFrameOrder.Reset(Context.GetUserId());/' Hubs/Spectator/SpectatorHub.cs \
-    && test "$(grep -c 'TomYumFrameOrder' Hubs/Spectator/SpectatorHub.cs)" = 3
+    && perl -0pi -e 's/(public async Task (?:Begin|End)PlaySession(?:V2)?\([^)]*\)\s*\{)/$1 TomYumFrameOrder.Reset(Context.GetUserId());/g' Hubs/Spectator/SpectatorHub.cs \
+    && test "$(grep -c 'TomYumFrameOrder.Filter' Hubs/Spectator/SpectatorHub.cs)" = 2 \
+    && test "$(grep -c 'TomYumFrameOrder.Reset' Hubs/Spectator/SpectatorHub.cs)" = 4 \
+    && test "$(grep -A1 -E 'public async Task (Begin|End)PlaySession(V2)?\(' Hubs/Spectator/SpectatorHub.cs | grep -c 'TomYumFrameOrder.Reset')" = 4
 # Ranked Play: the results stage waits for scores while it holds the room's lock; see patch-results-wait.pl.
 COPY patch-results-wait.pl /tmp/patch-results-wait.pl
 RUN f=Hubs/Multiplayer/Matchmaking/RankedPlay/Stages/ResultsStage.cs \
